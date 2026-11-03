@@ -12,11 +12,15 @@ import type { CSSProperties, FormEvent, ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { RepoCommit, RepositoryAnalysis, SourceFile } from "@/lib/types";
 
-type View = "overview" | "architecture" | "files" | "chat" | "dependencies" | "history" | "getting-started";
+type View = "overview" | "architecture" | "files" | "chat" | "documentation" | "pull-request" | "comparison" | "dependencies" | "history" | "getting-started";
 type Theme = "dark" | "light";
 type ExplanationLevel = "beginner" | "intermediate" | "advanced";
 type Citation = { path: string; start: number; end: number; url: string };
 type ChatMessage = { role: "user" | "assistant"; text: string; citations?: Citation[]; mode?: "ai" | "search" | "file" };
+type DocumentationKind = "readme" | "architecture" | "api" | "database" | "setup" | "onboarding" | "module" | "environment";
+type PullFinding = { severity: string; file: string; line: number | null; explanation: string; impact: string; fix: string; confidence: number };
+type PullReport = { pull: { number: number; title: string; body: string | null; html_url: string; base: { ref: string }; head: { ref: string }; changed_files: number; additions: number; deletions: number }; files: { filename: string; status: string; additions: number; deletions: number; patch?: string }[]; findings: PullFinding[]; summary: string; mode: "ai" | "evidence" };
+type ComparisonReport = { first: { repository: RepositoryAnalysis["repository"]; languages: RepositoryAnalysis["languages"]; frameworks: string[]; dependencies: { name: string; version: string; group: string }[]; files: number; sampledFiles: number; importEdges: number; testFiles: number; documentation: boolean; setup: { install: string | null; run: string | null; test: string | null } }; second: { repository: RepositoryAnalysis["repository"]; languages: RepositoryAnalysis["languages"]; frameworks: string[]; dependencies: { name: string; version: string; group: string }[]; files: number; sampledFiles: number; importEdges: number; testFiles: number; documentation: boolean; setup: { install: string | null; run: string | null; test: string | null } } };
 type TreeNode = { name: string; path: string; children?: TreeNode[]; file?: RepositoryAnalysis["files"][number] };
 
 const VIEWS: { id: View; label: string; icon: typeof LayoutDashboard; group: "workspace" | "intelligence" }[] = [
@@ -24,6 +28,9 @@ const VIEWS: { id: View; label: string; icon: typeof LayoutDashboard; group: "wo
   { id: "architecture", label: "Architecture", icon: Network, group: "workspace" },
   { id: "files", label: "File explorer", icon: FolderClosed, group: "workspace" },
   { id: "chat", label: "Repository chat", icon: MessageSquareText, group: "intelligence" },
+  { id: "documentation", label: "Documentation", icon: FileText, group: "intelligence" },
+  { id: "pull-request", label: "Pull request analysis", icon: GitFork, group: "intelligence" },
+  { id: "comparison", label: "Repository comparison", icon: Move, group: "intelligence" },
   { id: "getting-started", label: "Getting started", icon: Compass, group: "intelligence" },
   { id: "dependencies", label: "Dependencies", icon: Boxes, group: "intelligence" },
   { id: "history", label: "Git insights", icon: GitCommitHorizontal, group: "intelligence" },
@@ -156,6 +163,18 @@ export function RepoMindApp() {
   const [chatBusy, setChatBusy] = useState(false);
   const [chatError, setChatError] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [documentationKind, setDocumentationKind] = useState<DocumentationKind>("readme");
+  const [documentationText, setDocumentationText] = useState("");
+  const [documentationBusy, setDocumentationBusy] = useState(false);
+  const [documentationError, setDocumentationError] = useState("");
+  const [pullNumber, setPullNumber] = useState("");
+  const [pullReport, setPullReport] = useState<PullReport | null>(null);
+  const [pullBusy, setPullBusy] = useState(false);
+  const [pullError, setPullError] = useState("");
+  const [compareUrl, setCompareUrl] = useState("");
+  const [comparison, setComparison] = useState<ComparisonReport | null>(null);
+  const [compareBusy, setCompareBusy] = useState(false);
+  const [compareError, setCompareError] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
   const codeRef = useRef<HTMLDivElement>(null);
   const chatRequestId = useRef(0);
@@ -305,6 +324,51 @@ export function RepoMindApp() {
     setChatInput("");
   };
 
+  const generateDocs = async (kind = documentationKind, enhanceWithAi = false) => {
+    if (!analysis) return;
+    setDocumentationBusy(true);
+    setDocumentationError("");
+    try {
+      const response = await fetch("/api/documentation", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ analysis, kind, enhanceWithAi }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Documentation generation failed.");
+      setDocumentationKind(kind);
+      setDocumentationText(data.markdown || "");
+    } catch (error) {
+      setDocumentationError(error instanceof Error ? error.message : "Documentation generation failed.");
+    } finally { setDocumentationBusy(false); }
+  };
+
+  const analyzePullRequest = async (event?: FormEvent) => {
+    event?.preventDefault();
+    if (!analysis || !pullNumber.trim()) return;
+    setPullBusy(true);
+    setPullError("");
+    try {
+      const response = await fetch("/api/pull-request", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ repositoryUrl: analysis.repository.url, number: Number(pullNumber) }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Pull request analysis failed.");
+      setPullReport(data as PullReport);
+    } catch (error) {
+      setPullError(error instanceof Error ? error.message : "Pull request analysis failed.");
+    } finally { setPullBusy(false); }
+  };
+
+  const compareRepositories = async (event?: FormEvent) => {
+    event?.preventDefault();
+    if (!analysis || !compareUrl.trim()) return;
+    setCompareBusy(true);
+    setCompareError("");
+    try {
+      const response = await fetch("/api/compare", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ firstUrl: analysis.repository.url, secondUrl: compareUrl.trim() }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Repository comparison failed.");
+      setComparison(data as ComparisonReport);
+    } catch (error) {
+      setCompareError(error instanceof Error ? error.message : "Repository comparison failed.");
+    } finally { setCompareBusy(false); }
+  };
+
   const tree = useMemo(() => analysis ? buildTree(analysis.files) : [], [analysis]);
   const filteredFiles = useMemo(() => analysis?.files.filter((file) => !globalSearch || matchSearch(file.path, globalSearch) || file.symbols.some((symbol) => matchSearch(symbol, globalSearch))) || [], [analysis, globalSearch]);
   const currentTitle = VIEWS.find((item) => item.id === activeView)?.label || "Overview";
@@ -347,6 +411,9 @@ export function RepoMindApp() {
         {activeView === "architecture" && <ArchitectureView analysis={analysis} openFile={openFile} />}
         {activeView === "files" && <FileExplorer analysis={analysis} tree={tree} expanded={treeExpanded} setExpanded={setTreeExpanded} search={fileSearch} setSearch={setFileSearch} activeFile={activeFile} openFile={openFile} source={source} busy={fileBusy} error={fileError} lineFocus={lineFocus} codeRef={codeRef} searchRef={searchRef} explainFile={(path) => { clearConversation(); changeView("chat"); void askQuestion(undefined, "Explain this file", path); }} />}
         {activeView === "chat" && <ChatView analysis={analysis} messages={messages} input={chatInput} setInput={setChatInput} busy={chatBusy} error={chatError} ask={askQuestion} openFile={openFile} aiConfigured={aiConfigured} clearConversation={clearConversation} level={explanationLevel} setLevel={setExplanationLevel} />}
+        {activeView === "documentation" && <DocumentationView analysis={analysis} kind={documentationKind} setKind={setDocumentationKind} text={documentationText} setText={setDocumentationText} busy={documentationBusy} error={documentationError} generate={generateDocs} aiConfigured={aiConfigured} />}
+        {activeView === "pull-request" && <PullRequestView number={pullNumber} setNumber={setPullNumber} report={pullReport} busy={pullBusy} error={pullError} analyze={analyzePullRequest} />}
+        {activeView === "comparison" && <ComparisonView analysis={analysis} url={compareUrl} setUrl={setCompareUrl} report={comparison} busy={compareBusy} error={compareError} compare={compareRepositories} />}
         {activeView === "dependencies" && <DependenciesView analysis={analysis} openFile={openFile} />}
         {activeView === "history" && <HistoryView analysis={analysis} commits={history} frequentFiles={frequentFiles} busy={!history && !historyError} error={historyError} onRetry={() => { setHistory(null); setHistoryError(""); }} />}
         {activeView === "getting-started" && <GettingStartedView analysis={analysis} openFile={openFile} />}
@@ -368,6 +435,9 @@ function viewSubtitle(view: View, analysis: RepositoryAnalysis) {
     architecture: "A static map of modules and import relationships found in the selected snapshot.",
     files: "Browse the repository tree, inspect symbols, and open source at its exact commit.",
     chat: "Ask a question and receive source-backed matches from this exact commit.",
+    documentation: "Generate editable Markdown from verified repository signals, with optional server-side AI enhancement.",
+    "pull-request": "Inspect a public pull request without approving, merging, or publishing comments.",
+    comparison: "Compare two public repositories using the same bounded analysis engine and evidence-based metrics.",
     dependencies: "Explore manifest dependencies and locally resolved imports.",
     history: "Recent public commits and files touched in the sampled changes.",
     "getting-started": "Run setup commands from each supported manifest and inspect real project signals.",
@@ -554,6 +624,32 @@ function ChatView({ analysis, messages, input, setInput, busy, error, ask, openF
   </section><aside className="chat-side"><section className="panel chat-context-panel"><PanelHeader title="Repository context" /><div className="context-repo"><span className="repo-avatar">{analysis.repository.name.charAt(0).toUpperCase()}</span><div><b>{analysis.repository.fullName}</b><small>At {analysis.repository.commit.slice(0, 7)}</small></div></div><div className="context-stats"><span><FileText size={14} />{analysis.totalFiles.toLocaleString()} files in tree</span><span><Code2 size={14} />{analysis.scannedFiles} files sampled</span><span><Network size={14} />{analysis.edges.length} import links</span></div><div className="context-note"><ShieldCheck size={14} /><p>Source citations are assembled server-side from files in the pinned commit.</p></div></section><section className="panel chat-quick-panel"><PanelHeader title="Try asking" /><div>{suggestions.map((question) => <button key={question} onClick={() => ask(undefined, question)} disabled={busy}><Sparkles size={13} />{question}<ArrowUpRight size={13} /></button>)}</div></section><section className="provider-note"><div className="provider-note-icon"><LockKeyhole size={14} /></div><div><b>{aiConfigured ? "Provider connected" : "Bring your own AI"}</b><p>{aiConfigured ? "The configured server-side model is used for explanations. Your key never enters the browser." : "Add AI_API_KEY on the server to enable synthesized explanations. Source search works without it."}</p><span>{aiConfigured ? "KEY STORED SERVER-SIDE" : "NO KEY REQUIRED FOR SEARCH"}</span></div></section></aside></div>;
 }
 
+function DocumentationView({ analysis, kind, setKind, text, setText, busy, error, generate, aiConfigured }: {
+  analysis: RepositoryAnalysis; kind: DocumentationKind; setKind: (kind: DocumentationKind) => void; text: string; setText: (text: string) => void; busy: boolean; error: string; generate: (kind?: DocumentationKind, enhanceWithAi?: boolean) => void; aiConfigured: boolean;
+}) {
+  const options: [DocumentationKind, string][] = [["readme", "README"], ["architecture", "Architecture"], ["api", "API"], ["database", "Database"], ["setup", "Setup"], ["onboarding", "Onboarding"], ["module", "Modules"], ["environment", "Environment"]];
+  const download = (extension: "md" | "txt") => {
+    const blob = new Blob([text], { type: extension === "md" ? "text/markdown" : "text/plain" });
+    const href = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = href; link.download = `${kind}.md`; link.click(); URL.revokeObjectURL(href);
+  };
+  return <div className="tool-content"><section className="panel tool-controls"><div><b>Documentation generator</b><span>Evidence is generated from {analysis.repository.commit.slice(0, 7)} and remains editable before export.</span></div><div className="tool-control-row"><select value={kind} onChange={(event) => setKind(event.target.value as DocumentationKind)}>{options.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select><button className="primary-button" onClick={() => generate()} disabled={busy}>{busy ? "Generating…" : "Generate draft"}</button><button className="outline-button" onClick={() => generate(kind, true)} disabled={busy || !aiConfigured}><Sparkles size={14} /> AI enhance</button><button className="outline-button" onClick={() => download("md")} disabled={!text}>Download Markdown</button></div>{error && <div className="notice notice-warn"><TriangleAlert size={15} />{error}</div>}</section><div className="tool-grid"><section className="panel tool-editor"><PanelHeader title="Editable Markdown" /><textarea value={text} onChange={(event) => setText(event.target.value)} placeholder="Choose a document type and generate a draft." /></section><section className="panel tool-preview"><PanelHeader title="Preview" /><pre>{text || "Your generated document will appear here."}</pre></section></div></div>;
+}
+
+function PullRequestView({ number, setNumber, report, busy, error, analyze }: {
+  number: string; setNumber: (value: string) => void; report: PullReport | null; busy: boolean; error: string; analyze: (event?: FormEvent) => void;
+}) {
+  return <div className="tool-content"><section className="panel tool-controls"><form onSubmit={analyze}><div><b>Read-only pull request review</b><span>GitHub metadata and patches are inspected. RepoMind never approves, merges, or publishes comments.</span></div><div className="tool-control-row"><input value={number} onChange={(event) => setNumber(event.target.value.replace(/\D/g, ""))} inputMode="numeric" placeholder="Pull request number" /><button className="primary-button" disabled={busy || !number}>{busy ? "Analyzing…" : "Analyze PR"}</button></div></form>{error && <div className="notice notice-warn"><TriangleAlert size={15} />{error}</div>}</section>{report && <><div className="dependency-overview"><StatCard label="CHANGED FILES" value={report.pull.changed_files} note={`+${report.pull.additions} / -${report.pull.deletions}`} icon={<GitFork size={16} />} /><StatCard label="FINDINGS" value={report.findings.length} note={report.mode === "ai" ? "AI-assisted, patch-grounded" : "Deterministic patch checks"} icon={<ShieldCheck size={16} />} /><StatCard label="BRANCHES" value={`${report.pull.head.ref} → ${report.pull.base.ref}`} note={`PR #${report.pull.number}`} icon={<GitBranch size={16} />} /></div><section className="panel report-panel"><PanelHeader title={report.pull.title} /><p className="report-summary">{report.summary}</p>{report.findings.map((finding, index) => <article className="finding-row" key={`${finding.file}-${index}`}><span className={`finding-severity severity-${finding.severity}`}>{finding.severity}</span><div><b>{finding.file}{finding.line ? `:${finding.line}` : ""}</b><p>{finding.explanation}</p><small>Impact: {finding.impact} · Fix: {finding.fix} · Confidence: {finding.confidence}/10</small></div></article>)}{!report.findings.length && <div className="empty-inline">No findings were produced from the available metadata and patches. This is not a guarantee that the change is defect-free.</div>}<div className="report-files">{report.files.map((file) => <span key={file.filename}><FileCode2 size={12} />{file.status} · {file.filename}</span>)}</div></section></>}</div>;
+}
+
+function ComparisonView({ analysis, url, setUrl, report, busy, error, compare }: {
+  analysis: RepositoryAnalysis; url: string; setUrl: (value: string) => void; report: ComparisonReport | null; busy: boolean; error: string; compare: (event?: FormEvent) => void;
+}) {
+  const metrics = report ? [["Files", report.first.files, report.second.files], ["Sampled files", report.first.sampledFiles, report.second.sampledFiles], ["Import edges", report.first.importEdges, report.second.importEdges], ["Test files", report.first.testFiles, report.second.testFiles], ["Documentation", report.first.documentation ? "Yes" : "No", report.second.documentation ? "Yes" : "No"]] : [];
+  return <div className="tool-content"><section className="panel tool-controls"><form onSubmit={compare}><div><b>Compare repository snapshots</b><span>{analysis.repository.fullName} is the first repository. Both sides use bounded, read-only analysis.</span></div><div className="tool-control-row"><input value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://github.com/owner/other-repository" /><button className="primary-button" disabled={busy || !url.trim()}>{busy ? "Comparing…" : "Compare"}</button></div></form>{error && <div className="notice notice-warn"><TriangleAlert size={15} />{error}</div>}</section>{report && <section className="panel comparison-panel"><div className="comparison-head"><div><b>{report.first.repository.fullName}</b><small>{report.first.repository.commit.slice(0, 7)}</small></div><span>vs</span><div><b>{report.second.repository.fullName}</b><small>{report.second.repository.commit.slice(0, 7)}</small></div></div><div className="comparison-table">{metrics.map(([label, first, second]) => <div key={label as string}><span>{label}</span><b>{String(first)}</b><b>{String(second)}</b></div>)}</div><div className="comparison-columns"><div><h3>Technology</h3><p>{report.first.languages.map((item) => item.name).join(", ") || "No language data"}</p><p>{report.first.frameworks.join(", ") || "No framework signals"}</p></div><div><h3>Technology</h3><p>{report.second.languages.map((item) => item.name).join(", ") || "No language data"}</p><p>{report.second.frameworks.join(", ") || "No framework signals"}</p></div></div><p className="muted-copy">These indicators describe detected evidence and are not a universal quality score. Choose based on your requirements and inspect the cited repository files.</p></section>}</div>;
+}
+
 function DependenciesView({ analysis, openFile }: { analysis: RepositoryAnalysis; openFile: (path: string, line?: number) => void }) {
   const directImports = analysis.edges.filter((edge) => edge.from && edge.to);
   const incoming = new Map<string, number>();
@@ -618,6 +714,3 @@ function LoadingState({ message }: { message: string }) {
 function ErrorPanel({ title, message, onRetry }: { title: string; message: string; onRetry: () => void }) {
   return <div className="error-panel"><span><TriangleAlert size={19} /></span><h3>{title}</h3><p>{message}</p><button className="outline-button" onClick={onRetry}>Try again <ArrowRight size={14} /></button></div>;
 }
-
-
-
